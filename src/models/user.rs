@@ -23,14 +23,15 @@ impl PostgresUserRepository {
 #[async_trait]
 impl<U: Send + Sync + 'static> UserRepository<U> for PostgresUserRepository {
     async fn find_user_by_id(&self, id: &str) -> Result<User<U>, AuthError> {
-        let id = uuid::Uuid::parse_str(id).map_err(|_| AuthError::UserNotFound)?;
+        let id =
+            uuid::Uuid::parse_str(id).map_err(|e| AuthError::InternalServerError(e.to_string()))?;
         let row = sqlx::query!(
             "SELECT id, username, email, password_hash, role FROM users WHERE id = $1",
             id
         )
         .fetch_one(&self.pool)
         .await
-        .map_err(|_| AuthError::UserNotFound)?;
+        .map_err(|e| AuthError::UserNotFound(e.to_string()))?;
         Ok(User {
             id: row.id.to_string(),
             username: row.username,
@@ -57,7 +58,7 @@ impl<U: Send + Sync + 'static> UserRepository<U> for PostgresUserRepository {
         )
         .fetch_one(&self.pool)
         .await
-        .map_err(|_| AuthError::UserNotFound)?;
+        .map_err(|e| AuthError::UserNotFound(e.to_string()))?;
         Ok(User {
             id: row.id.to_string(),
             username: row.username,
@@ -76,10 +77,28 @@ impl<U: Send + Sync + 'static> UserRepository<U> for PostgresUserRepository {
             data: None,
         })
     }
-
     async fn create_user(&self, user: RegisterUserRequest) -> Result<User<U>, AuthError> {
-        let password_hash = hash_password(&user.password)?;
+        // Hash the password, propagating any hashing errors
+        let password_hash =
+            hash_password(&user.password).map_err(|e| AuthError::HashingError(e.to_string()))?;
 
+        // Check if email is already taken
+        let email_exists = sqlx::query!(
+            "SELECT EXISTS(SELECT 1 FROM users WHERE email = $1) as exists",
+            user.email
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+
+        if email_exists.exists.unwrap_or(false) {
+            return Err(AuthError::EmailTaken(format!(
+                "Email {} is already in use",
+                user.email
+            )));
+        }
+
+        // Insert the new user
         let row = sqlx::query!(
         "INSERT INTO users (username, email, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING id",
         user.username,
@@ -89,8 +108,22 @@ impl<U: Send + Sync + 'static> UserRepository<U> for PostgresUserRepository {
     )
     .fetch_one(&self.pool)
     .await
-    .map_err(|_| AuthError::DatabaseError)?;
+    .map_err(|e| {
+        // Check for unique constraint violations which might be missed by the initial check
+        if e.to_string().contains("unique constraint") || e.to_string().contains("duplicate key") {
+            if e.to_string().contains("email") {
+                AuthError::EmailTaken(format!("Email {} is already in use", user.email))
+            } else if e.to_string().contains("username") {
+                AuthError::InvalidUsername(format!("Username {} is already in use", user.username))
+            } else {
+                AuthError::DatabaseError(format!("Database constraint violation: {}", e))
+            }
+        } else {
+            AuthError::DatabaseError(format!("Failed to create user: {}", e))
+        }
+    })?;
 
+        // Return the created user
         Ok(User {
             id: row.id.to_string(),
             username: user.username,
@@ -100,9 +133,9 @@ impl<U: Send + Sync + 'static> UserRepository<U> for PostgresUserRepository {
             data: None, // Since `User<()>` has no extra data
         })
     }
-
     async fn update_user(&self, user: UpdateUser<U>) -> Result<User<U>, AuthError> {
-        let id = uuid::Uuid::from_str(&user.id).map_err(|_| AuthError::UserNotFound)?;
+        let id = uuid::Uuid::from_str(&user.id)
+            .map_err(|e| AuthError::InternalServerError(e.to_string()))?;
 
         // Fetch the existing user to merge updates
         let existing_user: User<U> = self.find_user_by_id(&user.id).await?;
@@ -131,10 +164,10 @@ impl<U: Send + Sync + 'static> UserRepository<U> for PostgresUserRepository {
         )
         .execute(&self.pool)
         .await
-        .map_err(|_| AuthError::DatabaseError)?;
+        .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
 
         if result.rows_affected() == 0 {
-            return Err(AuthError::UserNotFound);
+            return Err(AuthError::UserNotFound("user not found".to_string()));
         }
 
         // Return the updated user
@@ -142,11 +175,12 @@ impl<U: Send + Sync + 'static> UserRepository<U> for PostgresUserRepository {
     }
 
     async fn delete_user(&self, id: &str) -> Result<(), AuthError> {
-        let id = uuid::Uuid::from_str(id).map_err(|_| AuthError::UserNotFound)?;
+        let id =
+            uuid::Uuid::from_str(id).map_err(|e| AuthError::InternalServerError(e.to_string()))?;
         sqlx::query!("DELETE FROM users WHERE id = $1", id)
             .execute(&self.pool)
             .await
-            .map_err(|_| AuthError::DatabaseError)?;
+            .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
 
         Ok(())
     }

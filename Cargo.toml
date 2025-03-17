@@ -18,3 +18,4 @@ sqlx = { version = "0.8.3", features = [
     "uuid",
 ] }
 uuid = "1.16.0"
+validator = { version = "0.20.0", features = ["derive"] }

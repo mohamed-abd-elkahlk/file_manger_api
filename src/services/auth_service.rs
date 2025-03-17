@@ -5,22 +5,27 @@ use authcraft::{
     jwt::{JwtConfig, issue_jwt},
 };
 use sqlx::PgPool;
+use validator::Validate;
 
-use crate::models::{error::ApiError, user::PostgresUserRepository};
+use crate::{
+    models::{error::ApiError, user::PostgresUserRepository},
+    utils::validation::ValidatedRegisterUserRequest,
+};
 #[post("/sign-up")]
 async fn register(
     pool: web::Data<PgPool>,
     jwt: web::Data<JwtConfig>,
-    req: web::Json<RegisterUserRequest>,
+    req: web::Json<ValidatedRegisterUserRequest>,
 ) -> Result<HttpResponse, ApiError> {
     let repo = PostgresUserRepository::new(pool.get_ref().clone()); // Clone the pool reference
-
+    req.validate().map_err(ApiError::from)?;
+    let data: RegisterUserRequest = RegisterUserRequest::from(req.into_inner());
     // Call the repository method and handle errors
-    let result: User<()> = repo.create_user(req.into_inner()).await.map_err(|e| {
+    let result: User<()> = repo.create_user(data).await.map_err(|e| {
         // Convert AuthError into an ApiError
         match e {
-            AuthError::EmailTaken => ApiError::bad_request("Email or username already exists"),
-            AuthError::DatabaseError => ApiError::internal_server_error("Database error"),
+            AuthError::EmailTaken(_) => ApiError::bad_request("Email already exists"),
+            AuthError::DatabaseError(e) => ApiError::internal_server_error(&e),
             _ => ApiError::internal_server_error("Failed to create user"),
         }
     })?;

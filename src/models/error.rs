@@ -1,6 +1,7 @@
 use actix_web::{HttpResponse, ResponseError, http::StatusCode};
 use authcraft::error::AuthError;
 use std::fmt;
+use validator::ValidationErrors;
 
 #[derive(Debug)]
 pub struct ApiError {
@@ -73,54 +74,63 @@ impl ResponseError for ApiError {
         }))
     }
 }
-
-/// Implement From<AuthError> for ApiError
 impl From<AuthError> for ApiError {
     fn from(error: AuthError) -> Self {
         match error {
-            AuthError::UserNotFound => ApiError::not_found("User not found"),
-            AuthError::InvalidCredentials => ApiError::unauthorized("Invalid credentials"),
-            AuthError::TokenExpired => ApiError::unauthorized("Token expired"),
-            AuthError::InvalidToken => ApiError::unauthorized("Invalid token"),
-            AuthError::Unauthorized => ApiError::unauthorized("Unauthorized"),
-            AuthError::AccountLocked => ApiError::unauthorized("Account locked"),
-            AuthError::AccountDisabled => ApiError::unauthorized("Account disabled"),
-            AuthError::PasswordTooWeak => ApiError::bad_request("Password is too weak"),
-            AuthError::PasswordResetRequired => ApiError::bad_request("Password reset required"),
-            AuthError::TokenNotProvided => ApiError::bad_request("Token not provided"),
-            AuthError::TokenCreationFailed => {
-                ApiError::internal_server_error("Token creation failed")
-            }
-            AuthError::TokenVerificationFailed => {
-                ApiError::internal_server_error("Token verification failed")
-            }
-            AuthError::TokenRevoked => ApiError::unauthorized("Token revoked"),
-            AuthError::SessionExpired => ApiError::unauthorized("Session expired"),
-            AuthError::SessionNotFound => ApiError::not_found("Session not found"),
-            AuthError::TooManySessions => ApiError::bad_request("Too many active sessions"),
-            AuthError::EmailTaken => ApiError::bad_request("Email is already taken"),
-            AuthError::InvalidEmail => ApiError::bad_request("Invalid email address"),
-            AuthError::InvalidUsername => ApiError::bad_request("Invalid username"),
-            AuthError::RegistrationDisabled => ApiError::bad_request("Registration is disabled"),
-            AuthError::BruteForceAttempt => ApiError::unauthorized("Brute force attempt detected"),
-            AuthError::SuspiciousActivity => ApiError::unauthorized("Suspicious activity detected"),
-            AuthError::TwoFactorAuthRequired => {
-                ApiError::unauthorized("Two-factor authentication required")
-            }
-            AuthError::TwoFactorAuthFailed => {
-                ApiError::unauthorized("Two-factor authentication failed")
-            }
-            AuthError::DatabaseError => ApiError::internal_server_error("Database error"),
-            AuthError::ConfigurationError => ApiError::internal_server_error("Configuration error"),
-            AuthError::InternalServerError => {
-                ApiError::internal_server_error("Internal server error")
-            }
+            AuthError::UserNotFound(msg) => ApiError::not_found(&msg),
+            AuthError::InvalidCredentials(msg) => ApiError::unauthorized(&msg),
+            AuthError::TokenExpired(msg) => ApiError::unauthorized(&msg),
+            AuthError::InvalidToken(msg) => ApiError::unauthorized(&msg),
+            AuthError::Unauthorized(msg) => ApiError::unauthorized(&msg),
+            AuthError::AccountLocked(msg) => ApiError::unauthorized(&msg),
+            AuthError::AccountDisabled(msg) => ApiError::unauthorized(&msg),
+            AuthError::PasswordTooWeak(msg) => ApiError::bad_request(&msg),
+            AuthError::PasswordResetRequired(msg) => ApiError::bad_request(&msg),
+            AuthError::TokenNotProvided(msg) => ApiError::bad_request(&msg),
+            AuthError::TokenCreationFailed(msg) => ApiError::internal_server_error(&msg),
+            AuthError::TokenVerificationFailed(msg) => ApiError::internal_server_error(&msg),
+            AuthError::TokenRevoked(msg) => ApiError::unauthorized(&msg),
+            AuthError::SessionExpired(msg) => ApiError::unauthorized(&msg),
+            AuthError::SessionNotFound(msg) => ApiError::not_found(&msg),
+            AuthError::TooManySessions(msg) => ApiError::bad_request(&msg),
+            AuthError::EmailTaken(msg) => ApiError::bad_request(&msg),
+            AuthError::InvalidEmail(msg) => ApiError::bad_request(&msg),
+            AuthError::InvalidUsername(msg) => ApiError::bad_request(&msg),
+            AuthError::RegistrationDisabled(msg) => ApiError::bad_request(&msg),
+            AuthError::BruteForceAttempt(msg) => ApiError::unauthorized(&msg),
+            AuthError::SuspiciousActivity(msg) => ApiError::unauthorized(&msg),
+            AuthError::TwoFactorAuthRequired(msg) => ApiError::unauthorized(&msg),
+            AuthError::TwoFactorAuthFailed(msg) => ApiError::unauthorized(&msg),
+            AuthError::DatabaseError(msg) => ApiError::internal_server_error(&msg),
+            AuthError::ConfigurationError(msg) => ApiError::internal_server_error(&msg),
+            AuthError::InternalServerError(msg) => ApiError::internal_server_error(&msg),
             AuthError::CustomError(msg) => ApiError::internal_server_error(&msg),
             AuthError::HashingError(msg) => ApiError::internal_server_error(&msg),
-            AuthError::RateLimitExceeded => ApiError::too_many_requests("Rate limit exceeded"),
-            AuthError::ThirdPartyServiceError => {
-                ApiError::internal_server_error("Third-party service error")
-            }
+            AuthError::RateLimitExceeded(msg) => ApiError::too_many_requests(&msg),
+            AuthError::ThirdPartyServiceError(msg) => ApiError::internal_server_error(&msg),
         }
+    }
+}
+
+impl From<ValidationErrors> for ApiError {
+    fn from(errors: ValidationErrors) -> Self {
+        let error_messages: Vec<String> = errors
+            .field_errors()
+            .iter()
+            .flat_map(|(field, errs)| {
+                errs.iter().map(move |err| {
+                    format!(
+                        "{}: {}",
+                        field.to_uppercase(),
+                        err.message
+                            .clone()
+                            .unwrap_or_else(|| "Invalid input".into())
+                    )
+                })
+            })
+            .collect();
+        let message = error_messages.join(", ");
+        println!("{:?},{:?}", error_messages, message);
+        ApiError::bad_request(&message)
     }
 }
