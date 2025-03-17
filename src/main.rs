@@ -1,24 +1,12 @@
-use actix_web::{App, HttpResponse, HttpServer, Responder, get, middleware::Logger, post, web};
+use actix_web::{App, HttpServer, middleware::Logger, web};
 use config::Config;
-use services::auth_service::register;
+use routes::auth_routes::auth_routes_config;
 mod auth;
 mod config;
 mod models;
 mod routes;
 mod services;
 mod utils;
-#[get("/")]
-async fn hello() -> impl Responder {
-    HttpResponse::Ok().body("Hello world!")
-}
-#[post("/echo")]
-async fn echo(req_body: String) -> impl Responder {
-    HttpResponse::Ok().body(req_body)
-}
-
-async fn manual_hello() -> impl Responder {
-    HttpResponse::Ok().body("Hey there!")
-}
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -27,10 +15,7 @@ async fn main() -> std::io::Result<()> {
     env_logger::init();
     HttpServer::new(move || {
         App::new()
-            .service(hello)
-            .service(echo)
-            .service(register)
-            .route("/hey", web::get().to(manual_hello))
+            .service(web::scope("/api").configure(auth_routes_config))
             .app_data(web::Data::new(config.pool.clone()))
             .app_data(web::Data::new(config.jwt.clone()))
             .wrap(Logger::default())
