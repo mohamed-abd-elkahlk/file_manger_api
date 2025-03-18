@@ -1,13 +1,15 @@
-use authcraft::jwt::JwtConfig;
+use authcraft::{
+    email::{EmailConfig, EmailService},
+    jwt::JwtConfig,
+};
 use dotenv::dotenv;
 use sqlx::PgPool;
 use std::env;
 pub struct Config {
-    pub database_url: String,
     pub jwt: JwtConfig,
     pub pool: PgPool,
+    pub email_service: EmailService,
 }
-
 impl Config {
     pub async fn from_env() -> Self {
         dotenv().ok(); // Load environment variables from .env file
@@ -25,10 +27,23 @@ impl Config {
             .expect("Failed to create database pool");
         let jwt = JwtConfig::new(secret, expiration_days);
 
+        // Load email configuration from environment variables
+        let email_config = EmailConfig {
+            smtp_server: env::var("SMTP_SERVER").expect("SMTP_SERVER must be set"),
+            smtp_username: env::var("SMTP_USERNAME").expect("SMTP_USERNAME must be set"),
+            smtp_password: env::var("SMTP_PASSWORD").expect("SMTP_PASSWORD must be set"),
+            sender_email: env::var("SENDER_EMAIL").expect("SENDER_EMAIL must be set"),
+            sender_name: env::var("SENDER_NAME").expect("SENDER_NAME must be set"),
+        };
+        let email_service = EmailService::new(
+            email_config,
+            "/home/mohemd/Projects/backend/file_manger/src/views",
+        )
+        .unwrap();
         Self {
-            database_url,
             jwt,
             pool,
+            email_service,
         }
     }
 }

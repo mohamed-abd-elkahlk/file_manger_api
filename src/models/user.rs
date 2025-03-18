@@ -2,7 +2,9 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 use authcraft::{
-    RegisterUserRequest, Role, UpdateUser, User, UserRepository, error::AuthError,
+    RegisterUserRequest, Role, UpdateUser, User, UserRepository,
+    error::AuthError,
+    jwt::{Claims, JwtConfig, issue_jwt, verify_jwt},
     security::hash_password,
 };
 use serde::{Deserialize, Serialize};
@@ -21,39 +23,40 @@ impl PostgresUserRepository {
     }
 }
 #[async_trait]
-impl<U: Send + Sync + 'static> UserRepository<U> for PostgresUserRepository {
+impl<U: Send + Sync + serde::de::DeserializeOwned + 'static> UserRepository<U>
+    for PostgresUserRepository
+where
+    U: Default, // Ensure U has a default value if not explicitly provided
+{
     async fn find_user_by_id(&self, id: &str) -> Result<User<U>, AuthError> {
         let id =
             uuid::Uuid::parse_str(id).map_err(|e| AuthError::InternalServerError(e.to_string()))?;
         let row = sqlx::query!(
-            "SELECT id, username, email, password_hash, role FROM users WHERE id = $1",
+            "SELECT id, username, email, is_verified, password_hash, role FROM users WHERE id = $1",
             id
         )
         .fetch_one(&self.pool)
         .await
         .map_err(|e| AuthError::UserNotFound(e.to_string()))?;
+
         Ok(User {
             id: row.id.to_string(),
             username: row.username,
             email: row.email,
+            is_verified: row.is_verified,
             password_hash: row.password_hash,
-            role: row
-                .role
-                .as_deref() // Converts `Option<String>` to `Option<&str>`
-                .map(|r| match r {
-                    "Admin" => Role::Admin,
-                    "User" => Role::User,
-                    "Guest" => Role::Guest,
-                    _ => Role::Guest,
-                })
-                .unwrap_or(Role::Guest), // Default to Guest
-            data: None,
+            role: match row.role.as_str() {
+                "Admin" => Role::Admin,
+                "User" => Role::User,
+                "Guest" => Role::Guest,
+                _ => Role::Guest, // Default to Guest
+            },
+            data: None, // Ensure U is initialized correctly
         })
     }
-
     async fn find_user_by_email(&self, email: &str) -> Result<User<U>, AuthError> {
         let row = sqlx::query!(
-            "SELECT id, username, email, password_hash,  role FROM users WHERE email = $1",
+            "SELECT id, username, email, password_hash, is_verified,  role FROM users WHERE email = $1",
             email
         )
         .fetch_one(&self.pool)
@@ -63,17 +66,14 @@ impl<U: Send + Sync + 'static> UserRepository<U> for PostgresUserRepository {
             id: row.id.to_string(),
             username: row.username,
             email: row.email,
+            is_verified: row.is_verified,
             password_hash: row.password_hash,
-            role: row
-                .role
-                .as_deref() // Converts `Option<String>` to `Option<&str>`
-                .map(|r| match r {
-                    "Admin" => Role::Admin,
-                    "User" => Role::User,
-                    "Guest" => Role::Guest,
-                    _ => Role::Guest,
-                })
-                .unwrap_or(Role::Guest), // Default to Guest
+            role: match row.role.as_str() {
+                "Admin" => Role::Admin,
+                "User" => Role::User,
+                "Guest" => Role::Guest,
+                _ => Role::Guest, // Default to Guest
+            },
             data: None,
         })
     }
@@ -128,6 +128,7 @@ impl<U: Send + Sync + 'static> UserRepository<U> for PostgresUserRepository {
             id: row.id.to_string(),
             username: user.username,
             email: user.email,
+            is_verified: false,
             password_hash,
             role: Role::User,
             data: None, // Since `User<()>` has no extra data
@@ -181,6 +182,41 @@ impl<U: Send + Sync + 'static> UserRepository<U> for PostgresUserRepository {
             .execute(&self.pool)
             .await
             .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+
+        Ok(())
+    }
+    async fn create_verification_token(
+        &self,
+        email: &str,
+        jwt: JwtConfig,
+    ) -> Result<(String, User<U>), AuthError> {
+        let user: User<U> = self.find_user_by_email(email.into()).await?;
+        let token: String = issue_jwt(jwt, email.to_string(), Some(()))?;
+        Ok((token, user))
+    }
+    async fn verify_email(
+        &self,
+        token: &str,
+        jwt: JwtConfig,
+    ) -> Result<(Claims<U>, User<U>), AuthError> {
+        let token: Claims<U> =
+            verify_jwt(&jwt, token).map_err(|e| AuthError::InvalidToken(e.to_string()))?;
+        let user: User<U> = self.find_user_by_id(&token.sub).await?;
+        Ok((token, user))
+    }
+
+    async fn mark_user_as_verified(&self, user_id: &str) -> Result<(), AuthError> {
+        let id = uuid::Uuid::from_str(&user_id)
+            .map_err(|e| AuthError::InternalServerError(e.to_string()))?;
+
+        let result = sqlx::query!("UPDATE users SET is_verified = TRUE WHERE id = $1", id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+
+        if result.rows_affected() == 0 {
+            return Err(AuthError::UserNotFound("User not found".to_string()));
+        }
 
         Ok(())
     }

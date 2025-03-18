@@ -94,7 +94,6 @@ impl From<AuthError> for ApiError {
             AuthError::SessionNotFound(msg) => ApiError::not_found(&msg),
             AuthError::TooManySessions(msg) => ApiError::bad_request(&msg),
             AuthError::EmailTaken(msg) => ApiError::bad_request(&msg),
-            AuthError::InvalidEmail(msg) => ApiError::bad_request(&msg),
             AuthError::InvalidUsername(msg) => ApiError::bad_request(&msg),
             AuthError::RegistrationDisabled(msg) => ApiError::bad_request(&msg),
             AuthError::BruteForceAttempt(msg) => ApiError::unauthorized(&msg),

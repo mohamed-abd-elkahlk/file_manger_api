@@ -1,10 +1,12 @@
 use actix_web::{HttpResponse, cookie::Cookie, web};
 use authcraft::{
     LoginUserRequest, RegisterUserRequest, User, UserRepository,
+    email::EmailService,
     error::AuthError,
-    jwt::{JwtConfig, issue_jwt},
+    jwt::{Claims, JwtConfig, issue_jwt},
     security::verify_password,
 };
+use serde::Deserialize;
 use sqlx::PgPool;
 use validator::Validate;
 
@@ -15,13 +17,14 @@ use crate::{
 pub async fn register(
     pool: web::Data<PgPool>,
     jwt: web::Data<JwtConfig>,
+    email_service: web::Data<EmailService>,
     req: web::Json<ValidatedRegisterUserRequest>,
 ) -> Result<HttpResponse, ApiError> {
     let repo = PostgresUserRepository::new(pool.get_ref().clone()); // Clone the pool reference
     req.validate().map_err(ApiError::from)?;
     let data: RegisterUserRequest = RegisterUserRequest::from(req.into_inner());
     // Call the repository method and handle errors
-    let result: User<()> = repo.create_user(data).await.map_err(|e| {
+    let user: User<()> = repo.create_user(data).await.map_err(|e| {
         // Convert AuthError into an ApiError
         match e {
             AuthError::EmailTaken(_) => ApiError::bad_request("Email already exists"),
@@ -30,17 +33,20 @@ pub async fn register(
         }
     })?;
     let token: String =
-        issue_jwt::<()>(jwt.get_ref().clone(), result.id.clone(), None).map_err(|e| match e {
+        issue_jwt::<()>(jwt.get_ref().clone(), user.id.clone(), None).map_err(|e| match e {
             _ => ApiError::internal_server_error("Failed to create jwt token"),
         })?;
-    let cookie = Cookie::build("access_token", token)
-        .path("/") // Set cookie for the root path
-        .http_only(true) // Prevent JavaScript access (security measure)
-        .secure(true) // Send only over HTTPS
-        .finish();
 
-    // Return the successful response
-    Ok(HttpResponse::Ok().cookie(cookie).json(result))
+    let base_url = "http://localhost:8080"; // Change this in production
+    let verification_link = format!("{}/api/auth/verify-email?token={}", base_url, token);
+
+    // Send the verification email
+    email_service
+        .send_verification_email(&user.email, &user.username, &verification_link)
+        .await
+        .map_err(|e| ApiError::internal_server_error(&e.to_string()))?;
+
+    Ok(HttpResponse::Ok().body("Verification email sent"))
 }
 
 pub async fn login(
@@ -88,4 +94,32 @@ pub async fn login(
 
     // Return a successful response with the cookie and user data
     Ok(HttpResponse::Ok().cookie(cookie).json(result))
+}
+#[derive(Deserialize, Debug)]
+pub struct TokenQuery {
+    pub token: String,
+}
+
+pub async fn verify_email(
+    pool: web::Data<PgPool>,
+    jwt: web::Data<JwtConfig>,
+    query: web::Query<TokenQuery>,
+) -> Result<HttpResponse, ApiError> {
+    let repo: PostgresUserRepository = PostgresUserRepository::new(pool.get_ref().clone());
+    println!("{query:?}");
+    // Extract the email from the token and verify it
+    let user: User<()> = repo
+        .verify_email(&&query.token.to_string(), jwt.get_ref().clone())
+        .await
+        .map_err(|e| ApiError::unauthorized(&e.to_string()))?;
+    // If already verified, return early
+    if user.is_verified {
+        return Ok(HttpResponse::Ok().body("Email is already verified."));
+    }
+
+    // Mark the user as verified in the database
+    <PostgresUserRepository as UserRepository<()>>::mark_user_as_verified(&repo, &user.id)
+        .await
+        .map_err(|e| ApiError::internal_server_error(&e.to_string()))?;
+    Ok(HttpResponse::Ok().body("Email successfully verified."))
 }

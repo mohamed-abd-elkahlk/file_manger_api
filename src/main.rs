@@ -18,6 +18,7 @@ async fn main() -> std::io::Result<()> {
             .service(web::scope("/api").configure(auth_routes_config))
             .app_data(web::Data::new(config.pool.clone()))
             .app_data(web::Data::new(config.jwt.clone()))
+            .app_data(web::Data::new(config.email_service.clone()))
             .wrap(Logger::default())
     })
     .bind(("127.0.0.1", 8080))?
