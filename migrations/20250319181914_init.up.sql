@@ -1,55 +1,65 @@
 -- Add up migration script here
-BEGIN;
 
--- Drop the existing users table if it exists
-DROP TABLE IF EXISTS users;
-
--- Ensure the uuid-ossp extension is available for UUID generation
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-
--- Create the new users table with all required columns
 CREATE TABLE users (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    username TEXT NOT NULL,
-    is_verified BOOLEAN NOT NULL DEFAULT FALSE,
+    username TEXT NOT NULL UNIQUE,
     email TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('Admin', 'User', 'Guest')),
-    data JSONB,
+    is_verified BOOLEAN NOT NULL DEFAULT false,
+    last_login_at TIMESTAMP WITH TIME ZONE,
+    failed_login_attempts INT NOT NULL DEFAULT 0,
+    account_locked_until TIMESTAMP WITH TIME ZONE,
+    last_password_change TIMESTAMP WITH TIME ZONE,
+    password_history TEXT[], -- Store previous hashed passwords
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
 
-    -- Multi-Factor Authentication (MFA)
-    mfa_enabled BOOLEAN NOT NULL DEFAULT FALSE,
-    mfa_type TEXT CHECK (mfa_type IN ('Totp', 'Email', NULL)) DEFAULT NULL, -- Replaces mfa_settings
+CREATE TABLE mfa_settings (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    mfa_enabled BOOLEAN NOT NULL DEFAULT false,
+    mfa_type TEXT CHECK (mfa_type IN ('Totp', 'Email')),
     totp_secret TEXT, -- TOTP Secret (Google Authenticator)
     email_otp TEXT, -- Last generated Email OTP
     backup_codes TEXT[], -- Backup codes for MFA recovery
     mfa_recovery_codes_used TEXT[], -- Used backup codes
-
-    -- Password reset fields
-    password_reset_token TEXT,
-    password_reset_expiry TIMESTAMP WITH TIME ZONE,
-
-    -- Email verification fields
-    email_verification_token TEXT,
-    email_verification_expiry TIMESTAMP WITH TIME ZONE,
-
-    -- Session management fields
-    last_login_at TIMESTAMP WITH TIME ZONE,
-    failed_login_attempts INT NOT NULL DEFAULT 0,
-    account_locked_until TIMESTAMP WITH TIME ZONE,
-
-    -- Refresh token fields
-    refresh_token TEXT,
-    refresh_token_expiry TIMESTAMP WITH TIME ZONE,
-
-    -- Security fields
-    last_password_change TIMESTAMP WITH TIME ZONE,
-    password_history TEXT[], -- List of previously used password hashes
-
-    -- Account locking functionality
-    locked BOOLEAN NOT NULL DEFAULT FALSE,
-
-    locked_until TIMESTAMP WITH TIME ZONE
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT now()
 );
 
-COMMIT;
+ CREATE TABLE password_resets (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    reset_token TEXT NOT NULL UNIQUE,
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+
+
+CREATE TABLE email_verifications (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    verification_token TEXT NOT NULL UNIQUE,
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+
+CREATE TABLE sessions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    last_login_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+    ip_address TEXT,
+    user_agent TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+
+
+CREATE TABLE refresh_tokens (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    refresh_token TEXT NOT NULL UNIQUE,
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
