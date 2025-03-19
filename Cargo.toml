@@ -7,15 +7,11 @@ edition = "2024"
 actix-web = "4.10.2"
 async-trait = "0.1.88"
 authcraft = { git = "https://github.com/mohamed-abd-elkahlk/authcraft" }
+chrono = { version = "0.4.40", features = ["serde"] }
 dotenv = "0.15.0"
 env_logger = "0.11.7"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
-sqlx = { version = "0.8.3", features = [
-    "runtime-tokio",
-    "postgres",
-    "tls-rustls",
-    "uuid",
-] }
+sqlx = { version = "0.8.3", features = ["runtime-tokio", "postgres", "tls-rustls", "uuid", "time"] }
 uuid = "1.16.0"
 validator = { version = "0.20.0", features = ["derive"] }

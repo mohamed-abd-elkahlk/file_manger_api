@@ -3,7 +3,7 @@ use authcraft::{
     LoginUserRequest, RegisterUserRequest, User, UserRepository,
     email::EmailService,
     error::AuthError,
-    jwt::{Claims, JwtConfig, issue_jwt},
+    jwt::{JwtConfig, issue_jwt},
     security::verify_password,
 };
 use serde::Deserialize;
@@ -112,6 +112,7 @@ pub async fn verify_email(
         .verify_email(&&query.token.to_string(), jwt.get_ref().clone())
         .await
         .map_err(|e| ApiError::unauthorized(&e.to_string()))?;
+
     // If already verified, return early
     if user.is_verified {
         return Ok(HttpResponse::Ok().body("Email is already verified."));

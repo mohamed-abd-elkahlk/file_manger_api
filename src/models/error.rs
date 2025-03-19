@@ -107,6 +107,9 @@ impl From<AuthError> for ApiError {
             AuthError::HashingError(msg) => ApiError::internal_server_error(&msg),
             AuthError::RateLimitExceeded(msg) => ApiError::too_many_requests(&msg),
             AuthError::ThirdPartyServiceError(msg) => ApiError::internal_server_error(&msg),
+            AuthError::InvalidSecret(msg) => ApiError::unauthorized(&msg),
+            AuthError::InvalidOtp(msg) => ApiError::unauthorized(&msg),
+            AuthError::InvalidBackupCode(msg) => ApiError::unauthorized(&msg),
         }
     }
 }
