@@ -1,4 +1,7 @@
-use std::str::FromStr;
+use std::{
+    str::FromStr,
+    time::{Duration, SystemTime},
+};
 
 use async_trait::async_trait;
 use authcraft::{
@@ -6,9 +9,10 @@ use authcraft::{
     error::AuthError,
     jwt::{Claims, JwtConfig, issue_jwt, verify_jwt},
     mfa::{MfaSettings, MfaType},
-    security::{RequestPasswordResetRequest, ResetPasswordRequest, hash_password},
+    security::{
+        RequestPasswordResetRequest, ResetPasswordRequest, generate_reset_token, hash_password,
+    },
 };
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, prelude::FromRow, types::time::OffsetDateTime};
 use uuid::Uuid;
@@ -269,7 +273,7 @@ where
 
         let user_record = sqlx::query!(
             "UPDATE users
-             SET mfa_enabled = $1, mfa_settings = $2 
+             SET mfa_enabled = $1, mfa_type = $2 
              WHERE id = $3",
             true,
             &method_json,
@@ -278,31 +282,214 @@ where
         .execute(&self.pool)
         .await
         .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
-
+        if user_record.rows_affected() == 0 {
+            return Err(AuthError::UserNotFound("User not found".to_string()));
+        }
         Ok(())
     }
     async fn disable_mfa(&self, user_id: &str) -> Result<(), AuthError> {
-        todo!()
+        let id =
+            Uuid::from_str(user_id).map_err(|e| AuthError::InternalServerError(e.to_string()))?;
+
+        let user_record = sqlx::query!(
+            "UPDATE users
+             SET mfa_enabled = $1 
+             WHERE id = $2",
+            false,
+            id
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+        if user_record.rows_affected() == 0 {
+            return Err(AuthError::UserNotFound("User not found".to_string()));
+        }
+        Ok(())
     }
     async fn update_totp_secret(&self, user_id: &str, secret: String) -> Result<String, AuthError> {
-        todo!()
+        let id =
+            Uuid::parse_str(user_id).map_err(|e| AuthError::InternalServerError(e.to_string()))?;
+
+        sqlx::query!(
+            "UPDATE users SET totp_secret = $1 WHERE id = $2",
+            secret,
+            id
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+
+        Ok(secret)
     }
     async fn generate_backup_codes(&self, user_id: &str) -> Result<Vec<String>, AuthError> {
-        todo!()
+        let id =
+            Uuid::parse_str(user_id).map_err(|e| AuthError::InternalServerError(e.to_string()))?;
+
+        // Generate backup codes using MfaSettings
+        let backup_codes = MfaSettings::generate_backup_codes(10, 6);
+
+        sqlx::query!(
+            "UPDATE users SET backup_codes = $1 WHERE id = $2",
+            &backup_codes,
+            id
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+
+        Ok(backup_codes)
     }
     async fn use_backup_code(&self, user_id: &str, code: String) -> Result<(), AuthError> {
-        todo!()
+        let id =
+            Uuid::parse_str(user_id).map_err(|e| AuthError::InternalServerError(e.to_string()))?;
+
+        let user = sqlx::query!(
+            "SELECT mfa_enabled, backup_codes, totp_secret FROM users WHERE id = $1",
+            id
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+
+        // If MFA is disabled, return an error
+        if !user.mfa_enabled {
+            return Err(AuthError::ConfigurationError(
+                "User must enable MFA first to use this feature".to_string(),
+            ));
+        }
+
+        // Create an MfaSettings instance with user's backup codes
+        let mut mfa_settings = MfaSettings {
+            method: MfaType::Email, // Assuming Email for backup codes
+            secret: user.totp_secret.clone(),
+            backup_codes: user.backup_codes.clone(),
+        };
+
+        // Verify backup code
+        if mfa_settings.verify_backup_code(&code).is_ok() {
+            // Mark the code as used
+            mfa_settings.mark_backup_code_as_used(&code)?;
+
+            // Update the backup codes in the database
+            sqlx::query!(
+                "UPDATE users SET backup_codes = $1 WHERE id = $2",
+                &mfa_settings.backup_codes.unwrap_or_default(),
+                id
+            )
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+
+            return Ok(()); // Backup code successfully used
+        }
+
+        Err(AuthError::InvalidBackupCode(
+            "Invalid backup code".to_string(),
+        ))
     }
 
     // Password reset methods
-    async fn forgot_password(&self, email: RequestPasswordResetRequest) -> Result<(), AuthError> {
-        todo!()
+    async fn forgot_password(&self, req: RequestPasswordResetRequest) -> Result<(), AuthError> {
+        let email = req.email;
+        let password_reset_token = generate_reset_token();
+        // Set expiry time (e.g., 15 minutes from now)
+        let expiry_time = OffsetDateTime::now_utc() + Duration::from_secs(15 * 60);
+
+        let result = sqlx::query!(
+            "UPDATE users SET password_reset_token = $1, password_reset_expiry = $2 WHERE email = $3",
+            password_reset_token,
+            expiry_time,
+            &email
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+        if result.rows_affected() == 0 {
+            return Err(AuthError::UserNotFound("User not found".to_string()));
+        }
+        Ok(())
     }
-    async fn verify_reset_token(&self, token: &str) -> Result<bool, AuthError> {
-        todo!()
+
+    async fn verify_reset_token(&self, user_id: &str, token: &str) -> Result<bool, AuthError> {
+        let id =
+            Uuid::parse_str(user_id).map_err(|e| AuthError::InternalServerError(e.to_string()))?;
+
+        // Fetch the stored token and expiry time from the database
+        let user = sqlx::query!(
+            "SELECT password_reset_token, password_reset_expiry FROM users WHERE id = $1",
+            id
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+
+        // Check if a token exists and matches the provided one
+        if let Some(stored_token) = user.password_reset_token {
+            if stored_token == token {
+                // Check if the token is still valid (not expired)
+                if let Some(expiry_time) = user.password_reset_expiry {
+                    if OffsetDateTime::now_utc() <= expiry_time {
+                        return Ok(true); // Token is valid
+                    } else {
+                        return Err(AuthError::InvalidOtp("Reset token has expired".to_string()));
+                    }
+                }
+            }
+        }
+
+        Err(AuthError::InvalidOtp("Invalid reset token".to_string()))
     }
-    async fn reset_password(&self, request: ResetPasswordRequest) -> Result<(), AuthError> {
-        todo!()
+    async fn reset_password(
+        &self,
+        user_id: &str,
+        req: ResetPasswordRequest,
+    ) -> Result<(), AuthError> {
+        let id =
+            Uuid::parse_str(user_id).map_err(|e| AuthError::InternalServerError(e.to_string()))?;
+
+        // Fetch the reset token and expiry time
+        let user = sqlx::query!(
+            "SELECT password_reset_token, password_reset_expiry FROM users WHERE id = $1",
+            id
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+
+        // Validate token
+        if let Some(stored_token) = user.password_reset_token {
+            if stored_token != req.token {
+                return Err(AuthError::InvalidOtp("Invalid reset token".to_string()));
+            }
+
+            if let Some(expiry_time) = user.password_reset_expiry {
+                if OffsetDateTime::now_utc() > expiry_time {
+                    return Err(AuthError::InvalidOtp("Reset token has expired".to_string()));
+                }
+            } else {
+                return Err(AuthError::InvalidOtp(
+                    "No expiry time found for reset token".to_string(),
+                ));
+            }
+        } else {
+            return Err(AuthError::InvalidOtp("No reset token found".to_string()));
+        }
+
+        // Hash the new password
+        let hashed_password =
+            hash_password(&req.new_password).map_err(|e| AuthError::HashingError(e.to_string()))?;
+
+        // Update password and remove reset token
+        sqlx::query!(
+        "UPDATE users SET password_hash = $1, password_reset_token = NULL, password_reset_expiry = NULL WHERE id = $2",
+        hashed_password,
+        id
+    )
+    .execute(&self.pool)
+    .await
+    .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+
+        Ok(())
     }
 
     // Session management methods
@@ -355,13 +542,20 @@ where
         }
         Ok(())
     }
-    async fn lock_account(&self, user_id: &str, until: DateTime<Utc>) -> Result<(), AuthError> {
+    async fn lock_account(&self, user_id: &str, until: SystemTime) -> Result<(), AuthError> {
         let id =
             Uuid::from_str(user_id).map_err(|e| AuthError::InternalServerError(e.to_string()))?;
-        let result = sqlx::query!("UPDATE users SET locked = $1 WHERE id = $2", true, id)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+        let until = OffsetDateTime::from(until);
+
+        let result = sqlx::query!(
+            "UPDATE users SET locked = $1,locked_until=$2 WHERE id = $3",
+            true,
+            until,
+            id
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
         if result.rows_affected() == 0 {
             return Err(AuthError::UserNotFound("User not found".to_string()));
         }
@@ -380,17 +574,42 @@ where
         Ok(())
     }
 
-    // Refresh token methods
     async fn update_refresh_token(
         &self,
         user_id: &str,
         token: String,
-        expiry: DateTime<Utc>,
+        expiry: SystemTime,
     ) -> Result<(), AuthError> {
-        todo!()
+        let id =
+            Uuid::parse_str(user_id).map_err(|e| AuthError::InternalServerError(e.to_string()))?;
+
+        let expiry = OffsetDateTime::from(expiry);
+
+        sqlx::query!(
+            "UPDATE users SET refresh_token = $1, refresh_token_expiry = $2 WHERE id = $3",
+            token,
+            expiry,
+            id
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+
+        Ok(())
     }
     async fn clear_refresh_token(&self, user_id: &str) -> Result<(), AuthError> {
-        todo!()
+        let id =
+            Uuid::parse_str(user_id).map_err(|e| AuthError::InternalServerError(e.to_string()))?;
+
+        sqlx::query!(
+            "UPDATE users SET refresh_token = NULL, refresh_token_expiry = NULL WHERE id = $1",
+            id
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+
+        Ok(())
     }
 
     // Security methods

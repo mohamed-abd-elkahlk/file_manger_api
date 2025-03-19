@@ -329,8 +329,8 @@ dependencies = [
 
 [[package]]
 name = "authcraft"
-version = "0.5.4"
-source = "git+https://github.com/mohamed-abd-elkahlk/authcraft#1cf404a9872e3255bdb33422ea30549e8cc4ff4a"
+version = "0.5.7"
+source = "git+https://github.com/mohamed-abd-elkahlk/authcraft#7adfee6d2a4f4f035870026acd761f9743a7e98e"
 dependencies = [
  "async-trait",
  "base32 0.5.1",
@@ -2855,9 +2855,9 @@ dependencies = [
 
 [[package]]
 name = "tempfile"
-version = "3.19.0"
+version = "3.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "488960f40a3fd53d72c2a29a58722561dee8afdd175bd88e3db4677d7b2ba600"
+checksum = "7437ac7763b9b123ccf33c338a5cc1bac6f69b45a136c19bdd8a65e3916435bf"
 dependencies = [
  "fastrand",
  "getrandom 0.3.2",
